@@ -1,0 +1,30 @@
+modules = ["python-3.11", "postgresql-16"]
+
+[nix]
+channel = "stable-24_05"
+packages = ["file", "freetype", "lcms2", "libimagequant", "libjpeg", "libtiff", "libwebp", "libxcrypt", "openjpeg", "poppler_utils", "tcl", "tesseract", "tk", "zlib", "poppler"]
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Medical AI Server"
+
+[[workflows.workflow]]
+name = "Medical AI Server"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pip install fastapi uvicorn sqlalchemy psycopg2-binary python-multipart langchain-groq langgraph pydantic python-dateutil && python main.py"
+waitForPort = 5000
+
+[[ports]]
+localPort = 5000
+externalPort = 80

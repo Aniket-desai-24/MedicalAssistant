@@ -46,8 +46,10 @@ class PrescriptionOCR:
                     "success": False,
                     "error": "OCR functionality not available. Please install pytesseract, PIL, and pdf2image dependencies.",
                     "medicines": [],
-                    "file_type": "unknown",
-                    "filename": filename
+                    "file_type": "unknown", 
+                    "filename": filename,
+                    "fallback_available": True,
+                    "message": "You can still use manual entry to input medicine names."
                 }
             
             # Determine file type from filename extension
@@ -91,27 +93,64 @@ class PrescriptionOCR:
             raise ValueError("OCR dependencies not available")
             
         try:
-            # Find poppler path in Nix store
+            # Try multiple approaches to find poppler
             poppler_path = None
-            import glob
-            possible_paths = glob.glob('/nix/store/*poppler*/bin')
-            if possible_paths:
-                poppler_path = possible_paths[0]
-                logger.info(f"Found poppler at: {poppler_path}")
+            import os
+            import subprocess
             
-            # Convert PDF to images with poppler path
+            # Method 1: Check if pdftoppm is in PATH
+            try:
+                result = subprocess.run(['which', 'pdftoppm'], capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    pdftoppm_path = result.stdout.strip()
+                    poppler_path = os.path.dirname(pdftoppm_path)
+                    logger.info(f"Found poppler via which: {poppler_path}")
+            except Exception as e:
+                logger.warning(f"Could not find poppler via which: {e}")
+            
+            # Method 2: Search in common Nix store locations
+            if not poppler_path:
+                import glob
+                possible_paths = glob.glob('/nix/store/*poppler*/bin')
+                if possible_paths:
+                    poppler_path = possible_paths[0]
+                    logger.info(f"Found poppler in nix store: {poppler_path}")
+            
+            # Convert PDF to images with timeout and error handling
+            logger.info("Converting PDF to images...")
+            images = []
+            
+            # Try with poppler path first
             if poppler_path:
-                images = convert_from_bytes(pdf_content, poppler_path=poppler_path)
-            else:
-                # Try without explicit path
-                images = convert_from_bytes(pdf_content)
+                try:
+                    images = convert_from_bytes(pdf_content, poppler_path=poppler_path, timeout=30)
+                    logger.info(f"Successfully converted PDF using poppler at {poppler_path}")
+                except Exception as e:
+                    logger.warning(f"Failed with explicit poppler path: {e}")
+            
+            # If that failed, try without explicit path
+            if not images:
+                try:
+                    images = convert_from_bytes(pdf_content, timeout=30)
+                    logger.info("Successfully converted PDF without explicit poppler path")
+                except Exception as e:
+                    logger.error(f"PDF conversion failed completely: {e}")
+                    # Return a helpful error message
+                    raise ValueError(f"PDF processing failed. The file might be corrupted or poppler tools are not properly installed. Error: {str(e)}")
+            
+            if not images:
+                raise ValueError("No images were extracted from the PDF")
             
             extracted_text = ""
             for i, image in enumerate(images):
                 logger.info(f"Processing PDF page {i+1}")
-                # Use OCR to extract text from image
-                page_text = pytesseract.image_to_string(image, config='--psm 6')
-                extracted_text += f"\n--- Page {i+1} ---\n" + page_text
+                try:
+                    # Use OCR to extract text from image
+                    page_text = pytesseract.image_to_string(image, config='--psm 6')
+                    extracted_text += f"\n--- Page {i+1} ---\n" + page_text
+                except Exception as e:
+                    logger.error(f"OCR failed for page {i+1}: {e}")
+                    extracted_text += f"\n--- Page {i+1} (OCR Error) ---\n[OCR processing failed for this page]"
             
             return extracted_text.strip()
             

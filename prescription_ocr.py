@@ -91,8 +91,20 @@ class PrescriptionOCR:
             raise ValueError("OCR dependencies not available")
             
         try:
-            # Convert PDF to images
-            images = convert_from_bytes(pdf_content)
+            # Find poppler path in Nix store
+            poppler_path = None
+            import glob
+            possible_paths = glob.glob('/nix/store/*poppler*/bin')
+            if possible_paths:
+                poppler_path = possible_paths[0]
+                logger.info(f"Found poppler at: {poppler_path}")
+            
+            # Convert PDF to images with poppler path
+            if poppler_path:
+                images = convert_from_bytes(pdf_content, poppler_path=poppler_path)
+            else:
+                # Try without explicit path
+                images = convert_from_bytes(pdf_content)
             
             extracted_text = ""
             for i, image in enumerate(images):

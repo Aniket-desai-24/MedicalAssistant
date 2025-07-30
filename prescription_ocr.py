@@ -10,13 +10,20 @@ import os
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 
-import pytesseract
-from PIL import Image
-from pdf2image import convert_from_path, convert_from_bytes
-
 from groq_client import GroqClient
 
+# Configure logger first
 logger = logging.getLogger(__name__)
+
+# Optional OCR dependencies - graceful fallback if not available
+try:
+    import pytesseract
+    from PIL import Image
+    from pdf2image import convert_from_path, convert_from_bytes
+    OCR_AVAILABLE = True
+except ImportError:
+    OCR_AVAILABLE = False
+    logger.warning("OCR dependencies not available. File upload features will be limited.")
 
 class PrescriptionOCR:
     def __init__(self, groq_client: GroqClient):
@@ -34,6 +41,15 @@ class PrescriptionOCR:
             Dict with extracted medicines and metadata
         """
         try:
+            if not OCR_AVAILABLE:
+                return {
+                    "success": False,
+                    "error": "OCR functionality not available. Please install pytesseract, PIL, and pdf2image dependencies.",
+                    "medicines": [],
+                    "file_type": "unknown",
+                    "filename": filename
+                }
+            
             # Determine file type from filename extension
             file_extension = Path(filename).suffix.lower()
             logger.info(f"Processing file: {filename}, extension: {file_extension}")
@@ -71,6 +87,9 @@ class PrescriptionOCR:
     
     async def _extract_text_from_pdf(self, pdf_content: bytes) -> str:
         """Extract text from PDF using OCR"""
+        if not OCR_AVAILABLE:
+            raise ValueError("OCR dependencies not available")
+            
         try:
             # Convert PDF to images
             images = convert_from_bytes(pdf_content)
@@ -90,6 +109,9 @@ class PrescriptionOCR:
     
     async def _extract_text_from_image(self, image_content: bytes) -> str:
         """Extract text from image using OCR"""
+        if not OCR_AVAILABLE:
+            raise ValueError("OCR dependencies not available")
+            
         try:
             # Create temporary file for image processing
             with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as temp_file:

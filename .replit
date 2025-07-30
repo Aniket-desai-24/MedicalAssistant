@@ -22,7 +22,7 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "pip install fastapi uvicorn sqlalchemy psycopg2-binary python-multipart langchain-groq langgraph pydantic python-dateutil && python main.py"
+args = "pip install fastapi uvicorn sqlalchemy psycopg2-binary python-multipart langchain-groq langgraph pydantic python-dateutil pillow pdf2image pytesseract && python main.py"
 waitForPort = 5000
 
 [[ports]]

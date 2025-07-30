@@ -145,10 +145,10 @@ class PrescriptionOCR:
                     
                     for i, image in enumerate(images[:max_pages]):
                         try:
-                            # Use OCR to extract text
+                            # Use OCR to extract text with proper configuration
                             page_text = pytesseract.image_to_string(
                                 image, 
-                                config='--psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz -'
+                                config='--psm 6'
                             )
                             
                             if page_text.strip():
@@ -250,15 +250,20 @@ For text "1. Paracetamol 650mg - Take twice daily\n2. Ibuprofen 400mg - As neede
 Return: ["Paracetamol", "Ibuprofen"]
 """
 
-            response = await self.groq_client.llm.ainvoke([
-                {"role": "system", "content": "You are a medical AI assistant that extracts medicine names from prescription text. Always respond with a valid JSON array."},
-                {"role": "user", "content": prompt}
-            ])
+            response = await self.groq_client.get_completion(prompt)
             
             # Parse the AI response
             import json
             try:
-                medicines = json.loads(response.content)
+                # Clean the response to extract JSON
+                response_clean = response.strip()
+                if response_clean.startswith('```json'):
+                    response_clean = response_clean[7:]
+                if response_clean.endswith('```'):
+                    response_clean = response_clean[:-3]
+                response_clean = response_clean.strip()
+                
+                medicines = json.loads(response_clean)
                 if isinstance(medicines, list):
                     # Clean and validate medicine names
                     cleaned_medicines = []

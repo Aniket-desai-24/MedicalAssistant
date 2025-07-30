@@ -100,47 +100,31 @@ class PrescriptionOCR:
             import concurrent.futures
             
             def convert_pdf():
-                """PDF conversion function with robust poppler detection"""
+                """PDF conversion function with fallback approach"""
                 import subprocess
                 import os
                 import glob
                 
-                # Method 1: Try with explicit Nix store paths
-                nix_poppler_paths = glob.glob('/nix/store/*poppler*/bin')
-                for path in nix_poppler_paths:
-                    if os.path.exists(os.path.join(path, 'pdftoppm')):
-                        try:
-                            logger.info(f"Trying poppler from {path}")
-                            return convert_from_bytes(pdf_content, poppler_path=path)
-                        except Exception as e:
-                            logger.warning(f"Failed with {path}: {e}")
-                            continue
+                # Find poppler in nix store
+                poppler_bins = glob.glob('/nix/store/*/bin/pdftoppm')
                 
-                # Method 2: Try with extended PATH including all nix store bins
-                try:
-                    # Add all nix store bin directories to PATH
-                    nix_bin_paths = glob.glob('/nix/store/*/bin')
-                    extended_path = ':'.join(nix_bin_paths) + ':' + os.environ.get('PATH', '')
+                if poppler_bins:
+                    poppler_bin_dir = os.path.dirname(poppler_bins[0])
+                    logger.info(f"Found poppler at: {poppler_bin_dir}")
                     
-                    # Test if pdftoppm is now accessible
-                    env = os.environ.copy()
-                    env['PATH'] = extended_path
-                    
-                    result = subprocess.run(['pdftoppm', '-v'], capture_output=True, env=env, timeout=3)
-                    if result.returncode == 0:
-                        logger.info("Found pdftoppm with extended PATH")
-                        # Try conversion without explicit path but with extended environment
-                        return convert_from_bytes(pdf_content)
-                except Exception as e:
-                    logger.warning(f"Extended PATH method failed: {e}")
+                    # Try with explicit poppler path
+                    try:
+                        return convert_from_bytes(pdf_content, poppler_path=poppler_bin_dir, dpi=150)
+                    except Exception as e:
+                        logger.warning(f"Explicit path failed: {e}")
                 
-                # Method 3: Basic conversion attempt
+                # Fallback: Try basic conversion
+                logger.info("Trying basic PDF conversion...")
                 try:
-                    logger.info("Trying basic PDF conversion")
-                    return convert_from_bytes(pdf_content)
+                    return convert_from_bytes(pdf_content, dpi=150)
                 except Exception as e:
-                    logger.error(f"Basic conversion failed: {e}")
-                    raise ValueError(f"PDF processing failed - poppler tools not found. Available paths: {nix_poppler_paths}")
+                    logger.error(f"All PDF conversion methods failed: {e}")
+                    raise ValueError("PDF processing failed. Please convert your PDF to an image (JPG/PNG) and try again.")
             
             # Run with timeout using asyncio
             loop = asyncio.get_event_loop()

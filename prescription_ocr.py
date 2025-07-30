@@ -11,6 +11,7 @@ from typing import List, Dict, Any, Optional
 from pathlib import Path
 
 from groq_client import GroqClient
+from langchain_core.messages import HumanMessage, SystemMessage
 
 # Configure logger first
 logger = logging.getLogger(__name__)
@@ -256,13 +257,18 @@ Return ONLY a JSON array of medicine names:
 If no actual medicines found, return: []
 """
 
-            response = await self.groq_client.get_completion(prompt)
+            messages = [
+                SystemMessage(content="You are a medical expert specializing in reading prescriptions. Always respond with valid JSON."),
+                HumanMessage(content=prompt)
+            ]
+            response = await self.groq_client.llm.ainvoke(messages)
+            response_content = response.content
             
             # Parse the AI response
             import json
             try:
                 # Clean the response to extract JSON
-                response_clean = response.strip()
+                response_clean = response_content.strip()
                 if response_clean.startswith('```json'):
                     response_clean = response_clean[7:]
                 if response_clean.endswith('```'):
@@ -277,8 +283,11 @@ If no actual medicines found, return: []
                         if isinstance(med, str) and med.strip():
                             # Remove common non-medicine words and clean up
                             cleaned_name = self._clean_medicine_name(med.strip())
-                            if cleaned_name and len(cleaned_name) > 2:
-                                cleaned_medicines.append(cleaned_name)
+                            if cleaned_name and len(cleaned_name) > 2 and cleaned_name not in cleaned_medicines:
+                                # Avoid duplicates like "Penicillin" and "Penicillin V"
+                                if not any(existing.startswith(cleaned_name) or cleaned_name.startswith(existing) 
+                                         for existing in cleaned_medicines):
+                                    cleaned_medicines.append(cleaned_name)
                     
                     logger.info(f"Extracted {len(cleaned_medicines)} medicines: {cleaned_medicines}")
                     return cleaned_medicines
@@ -340,7 +349,7 @@ If no actual medicines found, return: []
             for match in matches:
                 cleaned = self._clean_medicine_name(match)
                 # More strict validation - must be a real medicine name
-                if self._is_valid_medicine_name(cleaned):
+                if self._is_valid_medicine_name(cleaned) and cleaned not in medicines:
                     medicines.append(cleaned)
         
         # Remove duplicates while preserving order

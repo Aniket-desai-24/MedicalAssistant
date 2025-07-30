@@ -2,7 +2,7 @@ modules = ["python-3.11", "nodejs-20", "web"]
 
 [nix]
 channel = "stable-25_05"
-packages = ["file", "freetype", "gumbo", "harfbuzz", "jbig2dec", "lcms2", "libimagequant", "libjpeg", "libjpeg_turbo", "libtiff", "libwebp", "libxcrypt", "mupdf", "openjpeg", "poppler", "poppler_utils", "swig", "tcl", "tesseract", "tk", "xcbuild", "zlib", "poppler-utils"]
+packages = ["file", "freetype", "gumbo", "harfbuzz", "jbig2dec", "lcms2", "libimagequant", "libjpeg", "libjpeg_turbo", "libtiff", "libwebp", "libxcrypt", "mupdf", "openjpeg", "poppler", "poppler-utils", "poppler_utils", "swig", "tcl", "tesseract", "tk", "xcbuild", "zlib"]
 
 [workflows]
 runButton = "Project"

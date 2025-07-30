@@ -221,33 +221,39 @@ class PrescriptionOCR:
         """
         try:
             prompt = f"""
-You are a medical AI assistant specialized in extracting medicine names from prescription text.
+You are a medical expert specializing in reading prescriptions. Extract ONLY actual medicine names from this prescription text.
 
 PRESCRIPTION TEXT:
 {text}
 
-TASK: Extract all medicine names from this prescription text.
+CRITICAL RULES:
+1. ONLY extract actual medicine/drug names (e.g., Ibuprofen, Penicillin, Aspirin, Metformin)
+2. IGNORE all instructions like "take twice daily", "let every", "four times daily"
+3. IGNORE dosages, frequencies, and administration instructions
+4. IGNORE doctor names, clinic names, patient information
+5. IGNORE words like "tablet", "capsule", "mg", "ml"
 
-REQUIREMENTS:
-1. Look for medicine names, drug names, and pharmaceutical products
-2. Include brand names and generic names
-3. Exclude dosage information, instructions, and non-medicine text
-4. Clean up the names (remove dosage, mg, ml, etc.)
-5. Return only the core medicine names
+WHAT TO LOOK FOR:
+- Pharmaceutical drug names (brand or generic)
+- Active ingredient names
+- Medicine names that appear before dosage information
 
-COMMON PATTERNS TO LOOK FOR:
-- Brand names (e.g., Crocin, Dolo, Paracetamol)
-- Generic names 
-- Tablets, capsules, syrups mentioned
-- Rx: or prescription lines
-- Medicine lists or numbered items
+WHAT TO IGNORE:
+- Instructions ("take", "daily", "times", "every", "as needed")
+- Dosage amounts ("200mg", "250mg") 
+- Administration details ("with food", "before meals")
+- Medical advice or notes
+- Doctor/clinic information
 
-Return a JSON array of medicine names only:
-["medicine1", "medicine2", "medicine3"]
+EXAMPLES:
+✓ CORRECT: "Ibuprofen 200mg - take every 6 hours" → Extract: "Ibuprofen"
+✓ CORRECT: "Penicillin V 250mg tablet four times daily" → Extract: "Penicillin V"  
+✗ WRONG: Don't extract "take every", "four times daily", "200mg"
 
-EXAMPLE:
-For text "1. Paracetamol 650mg - Take twice daily\n2. Ibuprofen 400mg - As needed"
-Return: ["Paracetamol", "Ibuprofen"]
+Return ONLY a JSON array of medicine names:
+["Medicine1", "Medicine2"]
+
+If no actual medicines found, return: []
 """
 
             response = await self.groq_client.get_completion(prompt)
@@ -291,11 +297,21 @@ Return: ["Paracetamol", "Ibuprofen"]
     
     def _clean_medicine_name(self, name: str) -> str:
         """Clean medicine name by removing dosage and common suffixes"""
+        if not name:
+            return ""
+            
         # Remove dosage patterns
         name = re.sub(r'\d+\s*(?:mg|ml|g|mcg|units?)\b', '', name, flags=re.IGNORECASE)
         
-        # Remove common instruction words
-        name = re.sub(r'\b(?:tablet|capsule|syrup|injection|drops?|cream|ointment)\b', '', name, flags=re.IGNORECASE)
+        # Remove common instruction and form words
+        unwanted_words = [
+            'tablet', 'capsule', 'syrup', 'injection', 'drops?', 'cream', 'ointment',
+            'take', 'daily', 'times', 'every', 'hours', 'let', 'four', 'twice',
+            'once', 'three', 'needed', 'pain', 'for', 'days'
+        ]
+        
+        for word in unwanted_words:
+            name = re.sub(rf'\b{word}\b', '', name, flags=re.IGNORECASE)
         
         # Remove extra whitespace and special characters
         name = re.sub(r'[^\w\s]', ' ', name)
@@ -305,38 +321,73 @@ Return: ["Paracetamol", "Ibuprofen"]
     
     def _extract_medicines_with_regex(self, text: str) -> List[str]:
         """
-        Fallback method to extract medicines using regex patterns
+        Fallback method to extract medicines using regex patterns focused on actual medicine names
         """
         medicines = []
         
-        # Common patterns for prescription medicines
+        # Enhanced patterns that focus on medicine names before dosage
         patterns = [
-            r'(?:^|\n)\s*\d+\.\s*([A-Za-z][A-Za-z\s]+?)(?:\s+\d+|\s*-|\s*$)',  # Numbered lists
-            r'(?:Rx:?|Tab:?|Cap:?|Syp:?)\s*([A-Za-z][A-Za-z\s]+?)(?:\s+\d+|\s*$)',  # Rx patterns
-            r'\b([A-Z][a-z]+(?:\s+[A-Z]?[a-z]+)*)\s+\d+\s*(?:mg|ml|g)\b',  # Medicine + dosage
+            # Pattern: "• Medicine Name 123mg" or "1. Medicine Name 123mg"
+            r'(?:^|\n)\s*[•\d]+\.?\s*([A-Z][a-z]+(?:\s+[A-Z])?)\s+\d+\s*(?:mg|ml|g)\b',
+            # Pattern: "Medicine Name" followed by dosage info
+            r'\b([A-Z][a-z]+(?:\s+V)?)\s+\d+\s*mg\b',
+            # Pattern: Known medicine names
+            r'\b(Ibuprofen|Penicillin|Aspirin|Paracetamol|Acetaminophen|Amoxicillin|Azithromycin)\b'
         ]
         
         for pattern in patterns:
             matches = re.findall(pattern, text, re.MULTILINE | re.IGNORECASE)
             for match in matches:
                 cleaned = self._clean_medicine_name(match)
-                if cleaned and len(cleaned) > 2 and cleaned not in medicines:
+                # More strict validation - must be a real medicine name
+                if self._is_valid_medicine_name(cleaned):
                     medicines.append(cleaned)
         
-        # Also look for common medicine name patterns
-        common_medicine_words = ['paracetamol', 'ibuprofen', 'aspirin', 'crocin', 'dolo', 'azithromycin', 'amoxicillin']
-        words = text.lower().split()
-        for word in words:
-            for med_word in common_medicine_words:
-                if med_word in word:
-                    medicines.append(med_word.title())
-                    break
-        
         # Remove duplicates while preserving order
+        seen = set()
         unique_medicines = []
         for med in medicines:
-            if med not in unique_medicines:
+            if med not in seen:
+                seen.add(med)
                 unique_medicines.append(med)
         
-        logger.info(f"Regex extraction found {len(unique_medicines)} medicines: {unique_medicines}")
-        return unique_medicines[:10]  # Limit to 10 medicines max
+        return unique_medicines
+    
+    def _is_valid_medicine_name(self, name: str) -> bool:
+        """Check if a name is likely a valid medicine name"""
+        if not name or len(name) < 3:
+            return False
+            
+        # Filter out common instruction words
+        invalid_words = {
+            'let', 'take', 'daily', 'times', 'every', 'hours', 'days',
+            'tablet', 'capsule', 'dose', 'with', 'food', 'water',
+            'morning', 'evening', 'night', 'before', 'after',
+            'four', 'twice', 'once', 'three', 'needed', 'pain',
+            'for', 'and', 'the', 'of', 'in', 'to', 'as'
+        }
+        
+        name_lower = name.lower()
+        words = name_lower.split()
+        
+        # Reject if any word is in invalid words
+        for word in words:
+            if word in invalid_words:
+                return False
+        
+        # Must start with capital letter (proper medicine names do)
+        if not name[0].isupper():
+            return False
+            
+        # Known medicine patterns
+        known_medicines = {
+            'ibuprofen', 'penicillin', 'aspirin', 'paracetamol', 
+            'acetaminophen', 'amoxicillin', 'azithromycin'
+        }
+        
+        # Accept if it's a known medicine
+        if name_lower in known_medicines or name_lower.startswith(tuple(known_medicines)):
+            return True
+            
+        # Accept if it looks like a proper medicine name (starts with capital, reasonable length)
+        return len(name) <= 20 and all(c.isalpha() or c.isspace() for c in name)

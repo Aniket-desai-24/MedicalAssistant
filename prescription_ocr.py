@@ -88,69 +88,67 @@ class PrescriptionOCR:
             }
     
     async def _extract_text_from_pdf(self, pdf_content: bytes) -> str:
-        """Extract text from PDF using OCR"""
+        """Extract text from PDF using OCR with simplified approach"""
         if not OCR_AVAILABLE:
             raise ValueError("OCR dependencies not available")
             
         try:
-            # Try multiple approaches to find poppler
-            poppler_path = None
-            import os
-            import subprocess
+            logger.info("Starting PDF to image conversion...")
             
-            # Method 1: Check if pdftoppm is in PATH
-            try:
-                result = subprocess.run(['which', 'pdftoppm'], capture_output=True, text=True, timeout=5)
-                if result.returncode == 0:
-                    pdftoppm_path = result.stdout.strip()
-                    poppler_path = os.path.dirname(pdftoppm_path)
-                    logger.info(f"Found poppler via which: {poppler_path}")
-            except Exception as e:
-                logger.warning(f"Could not find poppler via which: {e}")
+            # Simple approach: try convert_from_bytes with basic timeout
+            import asyncio
+            import concurrent.futures
             
-            # Method 2: Search in common Nix store locations
-            if not poppler_path:
-                import glob
-                possible_paths = glob.glob('/nix/store/*poppler*/bin')
-                if possible_paths:
-                    poppler_path = possible_paths[0]
-                    logger.info(f"Found poppler in nix store: {poppler_path}")
-            
-            # Convert PDF to images with timeout and error handling
-            logger.info("Converting PDF to images...")
-            images = []
-            
-            # Try with poppler path first
-            if poppler_path:
+            def convert_pdf():
+                """Simple PDF conversion function"""
                 try:
-                    images = convert_from_bytes(pdf_content, poppler_path=poppler_path, timeout=30)
-                    logger.info(f"Successfully converted PDF using poppler at {poppler_path}")
-                except Exception as e:
-                    logger.warning(f"Failed with explicit poppler path: {e}")
+                    # Try basic conversion first
+                    return convert_from_bytes(pdf_content)
+                except Exception as pdf_error:
+                    logger.warning(f"Basic PDF conversion failed: {pdf_error}")
+                    
+                    # Fall back to trying with system poppler if available
+                    import subprocess
+                    import os
+                    
+                    # Check if poppler tools are available in system
+                    try:
+                        subprocess.run(['pdftoppm', '-v'], capture_output=True, check=True, timeout=3)
+                        logger.info("Found system poppler tools")
+                        return convert_from_bytes(pdf_content)
+                    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+                        logger.error("Poppler tools not accessible")
+                        raise ValueError("PDF processing requires poppler-utils to be properly installed and accessible")
             
-            # If that failed, try without explicit path
-            if not images:
+            # Run with timeout using asyncio
+            loop = asyncio.get_event_loop()
+            with concurrent.futures.ThreadPoolExecutor() as executor:
                 try:
-                    images = convert_from_bytes(pdf_content, timeout=30)
-                    logger.info("Successfully converted PDF without explicit poppler path")
+                    images = await asyncio.wait_for(
+                        loop.run_in_executor(executor, convert_pdf),
+                        timeout=30.0  # 30 second timeout
+                    )
+                    logger.info(f"Successfully converted PDF to {len(images)} images")
+                except asyncio.TimeoutError:
+                    logger.error("PDF conversion timed out after 30 seconds")
+                    raise ValueError("PDF processing timed out. Please try a smaller file or image format instead.")
                 except Exception as e:
-                    logger.error(f"PDF conversion failed completely: {e}")
-                    # Return a helpful error message
-                    raise ValueError(f"PDF processing failed. The file might be corrupted or poppler tools are not properly installed. Error: {str(e)}")
+                    logger.error(f"PDF conversion error: {e}")
+                    raise ValueError(f"Could not process PDF file: {str(e)}. Please try uploading as an image (JPG/PNG) instead.")
             
             if not images:
-                raise ValueError("No images were extracted from the PDF")
+                raise ValueError("No pages found in PDF")
             
+            # Process each page with OCR
             extracted_text = ""
             for i, image in enumerate(images):
-                logger.info(f"Processing PDF page {i+1}")
+                logger.info(f"Running OCR on page {i+1}")
                 try:
-                    # Use OCR to extract text from image
                     page_text = pytesseract.image_to_string(image, config='--psm 6')
-                    extracted_text += f"\n--- Page {i+1} ---\n" + page_text
-                except Exception as e:
-                    logger.error(f"OCR failed for page {i+1}: {e}")
-                    extracted_text += f"\n--- Page {i+1} (OCR Error) ---\n[OCR processing failed for this page]"
+                    extracted_text += f"\n--- Page {i+1} ---\n{page_text}"
+                except Exception as ocr_error:
+                    logger.error(f"OCR failed for page {i+1}: {ocr_error}")
+                    extracted_text += f"\n--- Page {i+1} (OCR Error) ---\n[Could not read text from this page]"
             
             return extracted_text.strip()
             

@@ -108,15 +108,81 @@ class PrescriptionOCR:
             }
     
     async def _extract_text_from_pdf(self, pdf_content: bytes) -> str:
-        """Extract text from PDF - currently not supported due to poppler issues"""
-        logger.error("PDF processing is currently unavailable due to poppler configuration issues")
+        """Extract text from PDF using robust approach"""
+        if not OCR_AVAILABLE:
+            raise ValueError("OCR dependencies not available")
         
-        # Provide helpful guidance to user
-        raise ValueError(
-            "PDF processing is temporarily unavailable. "
-            "Please convert your prescription to an image format (JPG, PNG, TIFF, or BMP) and upload it instead. "
-            "The image OCR processing works perfectly and will extract all medicine names from your prescription."
-        )
+        logger.info("Starting PDF processing...")
+        
+        try:
+            import asyncio
+            import concurrent.futures
+            import os
+            
+            def process_pdf():
+                """Process PDF with timeout protection"""
+                try:
+                    # Set environment to ensure poppler tools are found
+                    env = os.environ.copy()
+                    env['PATH'] = f"/nix/var/nix/profiles/default/bin:{env.get('PATH', '')}"
+                    
+                    # Convert PDF to images with optimized settings
+                    images = convert_from_bytes(
+                        pdf_content, 
+                        dpi=150,  # Good balance of quality and speed
+                        fmt='jpeg',
+                        thread_count=2  # Limit threads for stability
+                    )
+                    
+                    if not images:
+                        raise ValueError("No pages found in PDF")
+                    
+                    logger.info(f"Successfully converted PDF to {len(images)} pages")
+                    
+                    # Extract text from each page using OCR
+                    extracted_text = ""
+                    max_pages = min(5, len(images))  # Limit to 5 pages for performance
+                    
+                    for i, image in enumerate(images[:max_pages]):
+                        try:
+                            # Use OCR to extract text
+                            page_text = pytesseract.image_to_string(
+                                image, 
+                                config='--psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz -'
+                            )
+                            
+                            if page_text.strip():
+                                extracted_text += f"\n--- Page {i+1} ---\n{page_text}"
+                            
+                        except Exception as ocr_error:
+                            logger.warning(f"OCR failed for page {i+1}: {ocr_error}")
+                            extracted_text += f"\n--- Page {i+1} (OCR Issue) ---\n[Text extraction failed for this page]"
+                    
+                    return extracted_text.strip() if extracted_text.strip() else "No readable text found in PDF"
+                    
+                except Exception as e:
+                    logger.error(f"PDF processing failed: {e}")
+                    raise ValueError(f"PDF processing error: {str(e)}")
+            
+            # Execute with timeout
+            loop = asyncio.get_event_loop()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                try:
+                    result = await asyncio.wait_for(
+                        loop.run_in_executor(executor, process_pdf),
+                        timeout=25.0  # 25 second timeout
+                    )
+                    
+                    logger.info("PDF processing completed successfully")
+                    return result
+                    
+                except asyncio.TimeoutError:
+                    logger.error("PDF processing timed out")
+                    raise ValueError("PDF processing took too long. Please try a smaller file or convert to image format.")
+                    
+        except Exception as e:
+            logger.error(f"PDF extraction failed: {e}")
+            raise ValueError(f"Could not process PDF: {str(e)}. You can try converting it to an image (JPG/PNG) instead.")
     
     async def _extract_text_from_image(self, image_content: bytes) -> str:
         """Extract text from image using OCR"""

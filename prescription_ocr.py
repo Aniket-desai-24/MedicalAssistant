@@ -15,14 +15,34 @@ from groq_client import GroqClient
 # Configure logger first
 logger = logging.getLogger(__name__)
 
-# Optional OCR dependencies - graceful fallback if not available
+# Optional dependencies - graceful fallback if not available
 try:
     import pytesseract
     from PIL import Image
     from pdf2image import convert_from_path, convert_from_bytes
     OCR_AVAILABLE = True
+    
+    # Try to import alternative PDF processors
+    PDF_PROCESSORS = []
+    
+    # Try PyPDF2 for simple text extraction
+    try:
+        import PyPDF2
+        PDF_PROCESSORS.append("pypdf2")
+        logger.info("Added PyPDF2 for text-based PDF processing")
+    except ImportError:
+        logger.debug("PyPDF2 not available")
+    
+    # pdf2image is already imported above
+    if 'convert_from_bytes' in locals():
+        PDF_PROCESSORS.append("pdf2image")
+        logger.info("Added pdf2image for OCR-based PDF processing")
+    
+    logger.info(f"Available PDF processors: {PDF_PROCESSORS}")
+    
 except ImportError:
     OCR_AVAILABLE = False
+    PDF_PROCESSORS = []
     logger.warning("OCR dependencies not available. File upload features will be limited.")
 
 class PrescriptionOCR:
@@ -88,79 +108,95 @@ class PrescriptionOCR:
             }
     
     async def _extract_text_from_pdf(self, pdf_content: bytes) -> str:
-        """Extract text from PDF using OCR with simplified approach"""
+        """Extract text from PDF using multiple methods"""
         if not OCR_AVAILABLE:
             raise ValueError("OCR dependencies not available")
-            
-        try:
-            logger.info("Starting PDF to image conversion...")
-            
-            # Simple approach: try convert_from_bytes with basic timeout
-            import asyncio
-            import concurrent.futures
-            
-            def convert_pdf():
-                """PDF conversion function with fallback approach"""
-                import subprocess
-                import os
-                import glob
+        
+        extracted_text = ""
+        
+        # Method 1: Try PyPDF2 for text-based PDFs (faster)
+        if "pypdf2" in PDF_PROCESSORS:
+            try:
+                logger.info("Trying PyPDF2 text extraction...")
+                import io
+                import PyPDF2
                 
-                # Find poppler in nix store
-                poppler_bins = glob.glob('/nix/store/*/bin/pdftoppm')
+                pdf_reader = PyPDF2.PdfReader(io.BytesIO(pdf_content))
+                text_content = ""
                 
-                if poppler_bins:
-                    poppler_bin_dir = os.path.dirname(poppler_bins[0])
-                    logger.info(f"Found poppler at: {poppler_bin_dir}")
-                    
-                    # Try with explicit poppler path
+                for page_num, page in enumerate(pdf_reader.pages):
                     try:
-                        return convert_from_bytes(pdf_content, poppler_path=poppler_bin_dir, dpi=150)
+                        page_text = page.extract_text()
+                        if page_text.strip():
+                            text_content += f"\n--- Page {page_num + 1} ---\n{page_text}"
                     except Exception as e:
-                        logger.warning(f"Explicit path failed: {e}")
+                        logger.warning(f"PyPDF2 failed on page {page_num + 1}: {e}")
                 
-                # Fallback: Try basic conversion
-                logger.info("Trying basic PDF conversion...")
-                try:
-                    return convert_from_bytes(pdf_content, dpi=150)
-                except Exception as e:
-                    logger.error(f"All PDF conversion methods failed: {e}")
-                    raise ValueError("PDF processing failed. Please convert your PDF to an image (JPG/PNG) and try again.")
-            
-            # Run with timeout using asyncio
-            loop = asyncio.get_event_loop()
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                try:
-                    images = await asyncio.wait_for(
-                        loop.run_in_executor(executor, convert_pdf),
-                        timeout=30.0  # 30 second timeout
-                    )
-                    logger.info(f"Successfully converted PDF to {len(images)} images")
-                except asyncio.TimeoutError:
-                    logger.error("PDF conversion timed out after 30 seconds")
-                    raise ValueError("PDF processing timed out. Please try a smaller file or image format instead.")
-                except Exception as e:
-                    logger.error(f"PDF conversion error: {e}")
-                    raise ValueError(f"Could not process PDF file: {str(e)}. Please try uploading as an image (JPG/PNG) instead.")
-            
-            if not images:
-                raise ValueError("No pages found in PDF")
-            
-            # Process each page with OCR
-            extracted_text = ""
-            for i, image in enumerate(images):
-                logger.info(f"Running OCR on page {i+1}")
-                try:
-                    page_text = pytesseract.image_to_string(image, config='--psm 6')
-                    extracted_text += f"\n--- Page {i+1} ---\n{page_text}"
-                except Exception as ocr_error:
-                    logger.error(f"OCR failed for page {i+1}: {ocr_error}")
-                    extracted_text += f"\n--- Page {i+1} (OCR Error) ---\n[Could not read text from this page]"
-            
-            return extracted_text.strip()
-            
-        except Exception as e:
-            logger.error(f"Error extracting text from PDF: {str(e)}")
-            raise
+                if text_content.strip():
+                    logger.info("Successfully extracted text using PyPDF2")
+                    return text_content.strip()
+                else:
+                    logger.info("PyPDF2 found no text content, trying OCR method...")
+                    
+            except Exception as e:
+                logger.warning(f"PyPDF2 method failed: {e}")
+        
+        # Method 2: OCR-based extraction (slower but works on image-based PDFs)
+        if "pdf2image" in PDF_PROCESSORS:
+            try:
+                logger.info("Trying OCR-based PDF processing...")
+                import asyncio
+                import concurrent.futures
+                
+                def convert_and_ocr():
+                    """Convert PDF pages and run OCR with timeout"""
+                    try:
+                        # Convert PDF to images with lower DPI for speed
+                        images = convert_from_bytes(pdf_content, dpi=120, fmt='jpeg')
+                        logger.info(f"Converted PDF to {len(images)} images")
+                        
+                        ocr_text = ""
+                        for i, image in enumerate(images):
+                            if i >= 3:  # Limit to first 3 pages for speed
+                                logger.info(f"Limiting processing to first {i} pages for performance")
+                                break
+                                
+                            try:
+                                page_text = pytesseract.image_to_string(image, config='--psm 6')
+                                ocr_text += f"\n--- Page {i+1} ---\n{page_text}"
+                            except Exception as ocr_error:
+                                logger.error(f"OCR failed for page {i+1}: {ocr_error}")
+                                ocr_text += f"\n--- Page {i+1} (OCR Error) ---\n[Could not read text]"
+                        
+                        return ocr_text
+                        
+                    except Exception as e:
+                        logger.error(f"PDF to image conversion failed: {e}")
+                        raise ValueError("PDF processing failed - please try uploading as an image instead")
+                
+                # Run with shorter timeout
+                loop = asyncio.get_event_loop()
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    try:
+                        extracted_text = await asyncio.wait_for(
+                            loop.run_in_executor(executor, convert_and_ocr),
+                            timeout=20.0  # Reduced to 20 seconds
+                        )
+                        
+                        if extracted_text.strip():
+                            logger.info("Successfully extracted text using OCR")
+                            return extracted_text.strip()
+                            
+                    except asyncio.TimeoutError:
+                        logger.error("OCR processing timed out")
+                        raise ValueError("PDF processing timed out. Please try uploading as an image (JPG/PNG) instead.")
+                        
+            except Exception as e:
+                logger.error(f"OCR method failed: {e}")
+                raise ValueError(f"PDF processing failed: {str(e)}. Please try uploading as an image (JPG/PNG) instead.")
+        
+        # If we get here, no methods worked
+        raise ValueError("Unable to process PDF. Please convert to an image format (JPG/PNG) and try again.")
     
     async def _extract_text_from_image(self, image_content: bytes) -> str:
         """Extract text from image using OCR"""

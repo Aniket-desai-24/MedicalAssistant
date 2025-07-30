@@ -520,8 +520,15 @@ class MedicalAIAssistant {
 
     showExtractedInfo(result) {
         const resultsSection = document.getElementById('resultsSection');
+        
+        // Remove any existing OCR results to prevent duplicates
+        const existingOCR = resultsSection.querySelector('.ocr-results');
+        if (existingOCR) {
+            existingOCR.remove();
+        }
+        
         const extractedDiv = document.createElement('div');
-        extractedDiv.className = 'alert alert-info mt-3';
+        extractedDiv.className = 'alert alert-info mt-3 ocr-results';
         extractedDiv.innerHTML = `
             <h6><i class="fas fa-eye me-2"></i>OCR Extraction Results</h6>
             <p><strong>Extracted Medicines:</strong> ${result.extracted_medicines.join(', ')}</p>

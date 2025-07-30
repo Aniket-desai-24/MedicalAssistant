@@ -193,23 +193,31 @@ async def check_prescription(
                 patient_allergies, drug, db
             )
             
-            # Combine results
+            # Combine results - check for duplicates before adding
             if direct_conflicts:
                 for conflict in direct_conflicts:
-                    if conflict['severity'] in ['life_threatening', 'severe']:
-                        contraindications.append(ContraindicationItem(
-                            medicine=medicine_name,
-                            allergen=conflict['allergen_name'],
-                            severity=conflict['severity'],
-                            reason=f"Direct allergy match: {conflict['reaction_description']}"
-                        ))
-                    else:
-                        warnings.append(WarningItem(
-                            medicine=medicine_name,
-                            allergen=conflict['allergen_name'],
-                            severity=conflict['severity'],
-                            reason=f"Known allergy: {conflict['reaction_description']}"
-                        ))
+                    # Create unique identifier for this conflict
+                    conflict_key = f"{medicine_name}_{conflict['allergen_name']}_{conflict['severity']}"
+                    
+                    # Check if this exact conflict already exists
+                    existing_contraindications = [f"{c.medicine}_{c.allergen}_{c.severity}" for c in contraindications]
+                    existing_warnings = [f"{w.medicine}_{getattr(w, 'allergen', '')}_{getattr(w, 'severity', '')}" for w in warnings]
+                    
+                    if conflict_key not in existing_contraindications and conflict_key not in existing_warnings:
+                        if conflict['severity'] in ['life_threatening', 'severe']:
+                            contraindications.append(ContraindicationItem(
+                                medicine=medicine_name,
+                                allergen=conflict['allergen_name'],
+                                severity=conflict['severity'],
+                                reason=f"Direct allergy match: {conflict['reaction_description']}"
+                            ))
+                        else:
+                            warnings.append(WarningItem(
+                                medicine=medicine_name,
+                                allergen=conflict['allergen_name'],
+                                severity=conflict['severity'],
+                                reason=f"Known allergy: {conflict['reaction_description']}"
+                            ))
             
             elif cross_reactivity_result.get('has_cross_reactivity'):
                 warnings.append(WarningItem(
